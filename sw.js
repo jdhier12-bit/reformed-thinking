@@ -1,5 +1,5 @@
 // Reformed Thinking service worker. Bump VERSION on every deploy.
-const VERSION='rt7';
+const VERSION='rt8';
 const SHELL='rt-shell-'+VERSION, DATA='rt-data-d1' // bump only when data/ changes;
 const SHELL_FILES=['./','index.html','style.css','app.js','rag.js','pwa.js','manifest.webmanifest','icons/icon.svg','icons/icon-192.png','icons/icon-512.png','apple-touch-icon.png'];
 const DATA_FILES=['data/topics.json','data/src-calvin.json','data/src-boc.json','data/src-luther.json','data/kjv.json'];
