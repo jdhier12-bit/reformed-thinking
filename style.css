@@ -107,3 +107,9 @@ html{scroll-behavior:smooth}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 24px);transform:translateX(-50%);background:#1d2433;color:#fff;padding:10px 16px;border-radius:999px;font:600 14px var(--sans);z-index:50;box-shadow:0 6px 20px rgba(0,0,0,.25)}
 .toast[hidden]{display:none}
 .install[hidden]{display:none!important}
+.aibox{background:var(--bg);border:1px solid var(--line);border-left:3px solid var(--gold);border-radius:10px;padding:10px 12px}
+.aitext p{margin:0 0 8px}.aitext p:last-child{margin:0}
+.aistat{display:flex;flex-direction:column;gap:6px;margin:10px 0 0;font:13px/1.4 var(--sans);color:var(--muted)}
+p.aistat{flex-direction:row;align-items:center;gap:8px}
+.spin{width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:rtspin .8s linear infinite;flex:none}
+@keyframes rtspin{to{transform:rotate(360deg)}}

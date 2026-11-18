@@ -17,8 +17,26 @@ function bm25(ix,qterms,k1=1.2,b=0.75){const res=[];const idf=new Map(qterms.map
   for(const d of ix.docs){let s=0,hit=0;for(const [w] of qterms){const f=d.tf.get(w);if(f){hit++;s+=idf.get(w)*f*(k1+1)/(f+k1*(1-b+b*d.len/ix.avg))}}
     if(s>0)res.push([s*(1+0.35*(hit-1)),d])}
   return res.sort((a,b)=>b[0]-a[0])}
-function qterms(q){const base=toks(q);const out=new Map();const joined=base.join('');
-  base.forEach(w=>{out.set(stem(w),Math.max(out.get(stem(w))||0,1));(SYN[w]||SYN[w.replace(/s$/,'')]||[]).forEach(s=>{const k=stem(s);if(!out.has(k))out.set(k,0.5)})});
+// Weighted query expansion: closer synonyms rank almost as high as the word itself.
+const EXP={interest:[['usury',.95],['usurer',.9],['lend',.8],['loan',.8],['borrow',.7],['debt',.6],['money',.6],['gain',.6],['lawful',.4],['steal',.35],['theft',.35],['fraud',.35],['neighbour',.35],['poor',.35],['riches',.35]],
+  choose:[['elect',.9],['election',.9],['chosen',.9],['predestination',.8]],
+  usury:[['usurer',.95],['interest',.6],['lend',.8],['loan',.8],['borrow',.7],['steal',.5],['theft',.5],['fraud',.5],['gain',.4]],
+  lending:[['lend',1],['loan',.8],['borrow',.7],['usury',.8],['debt',.6]],lend:[['loan',.8],['borrow',.7],['usury',.8]],
+  debt:[['debts',1],['debtor',.8],['creditor',.7],['borrow',.7],['owe',.6]],borrow:[['lend',.8],['loan',.8],['debt',.6]],
+  bank:[['money',.6],['usury',.6],['lend',.6]],banking:[['money',.6],['usury',.6],['lend',.6]],
+  stealing:[['steal',1],['theft',.9],['thief',.8],['fraud',.6]],theft:[['steal',.9],['thief',.8],['fraud',.6]],
+  greed:[['covetousness',.9],['avarice',.9],['covet',.8],['riches',.5]],work:[['labour',.7],['calling',.6],['vocation',.6]],job:[['calling',.8],['vocation',.8],['labour',.6]],
+  forgiveness:[['remission',.9],['pardon',.8],['forgive',.9]],forgive:[['remission',.8],['pardon',.8]],
+  lying:[['lie',.9],['falsehood',.8],['false',.6],['witness',.5]],lie:[['falsehood',.8],['false',.6]],
+  anger:[['wrath',.8],['angry',.9]],pride:[['proud',.9],['arrogance',.8],['humility',.5]],humility:[['humble',.9],['lowliness',.7]],
+  obedience:[['obey',.9],['submission',.7]],suffering:[['afflictions',.8],['affliction',.8],['cross',.6],['tribulation',.7]],
+  heresy:[['heretics',.9],['heretic',.9],['error',.5]],worship:[['adoration',.7],['ceremonies',.6],['service',.5]],
+  scripture:[['scriptures',1],['word',.6]],bible:[['scripture',.9],['scriptures',.9]],mercy:[['grace',.6],['compassion',.7]]};
+const AMBIG={interest:.5,charge:.3,wrong:.2,okay:.2};
+function qterms(q){const base=toks(q.replace(/\bwrong\b/gi,''));const out=new Map();const joined=base.join('');
+  const money=/\b(charge|charging|money|loan|loans|bank|rate|rates|lend|lending|debt|borrow)/i.test(q);
+  base.forEach(w=>{const iw=w==='interest'||w==='interests';if(iw&&!money){out.set(stem(w),Math.max(out.get(stem(w))||0,1));return}const wt=iw?.5:(AMBIG[w]||1);
+    out.set(stem(w),Math.max(out.get(stem(w))||0,wt));(EXP[w]||EXP[w.replace(/s$/,'')]||[]).forEach(([s,x])=>{const k=stem(s);out.set(k,Math.max(out.get(k)||0,x))});(SYN[w]||SYN[w.replace(/s$/,'')]||[]).forEach(s=>{const k=stem(s);if(!out.has(k))out.set(k,0.5)})});
   for(let i=0;i<base.length-1;i++){const j=base[i]+base[i+1];(SYN[j]||[]).forEach(s=>{const k=stem(s);if(!out.has(k))out.set(k,0.6)})}
   return [...out]}
 async function load(onStatus){if(corpora)return corpora;if(loading)return loading;
@@ -56,11 +74,14 @@ function enableAI(){if(initP)return initP;
   initP=(async()=>{const g=await gpuInfo();if(!g.ok){AI.state='unsupported';AI.error=g.why;emit();return}
     AI.state='loading';AI.progress='Starting…';emit();
     try{await createEngine(g);AI.state='ready';localStorage.setItem('tr_ai','1');emit()}
-    catch(e){AI.state='error';AI.error=String(e&&e.message||e);emit()}})();
+    catch(e){console.warn('AI start failed:',String(e&&e.message||e));
+      try{try{AI.engine&&await AI.engine.unload()}catch(_){}AI.engine=null;AI.pct=0;emit();await createEngine(g,true);AI.state='ready';emit()}
+      catch(e2){console.warn('Small AI start failed:',String(e2&&e2.message||e2));AI.state='error';AI.error='AI unavailable';emit()}}})();
   return initP}
 let webllmMod=null,gpuF16=null;
-async function createEngine(g){webllmMod=webllmMod||await import('https://esm.run/@mlc-ai/web-llm@0.2.88');
-  if(g)gpuF16=g.f16;AI.model=gpuF16?MODEL_F16:MODEL_F32;
+let useSmall=false;
+async function createEngine(g,small){webllmMod=webllmMod||await import('https://esm.run/@mlc-ai/web-llm@0.2.88');
+  if(g)gpuF16=g.f16;if(small)useSmall=true;AI.model=useSmall?(gpuF16?'Qwen2.5-0.5B-Instruct-q4f16_1-MLC':'Qwen2.5-0.5B-Instruct-q4f32_1-MLC'):(gpuF16?MODEL_F16:MODEL_F32);
   AI.engine=await webllmMod.CreateMLCEngine(AI.model,{initProgressCallback:p=>{AI.progress=p.text||'';AI.pct=p.progress;if(AI.state==='loading')emit()}})}
 function fmtPassages(list,prefix){return list.map((d,i)=>`[${prefix}${i+1}] ${d.t.replace(/\{§\d+\}/g,'').split(' ').slice(0,130).join(' ')}`).join('\n\n')}
 const RULES='Rules: Use ONLY the numbered passages. Do NOT quote; never use quotation marks. Paraphrase in your own plain words. Do not mention book, chapter, section or page numbers; refer to passages only by their bracket number like [1]. Do not add names, groups or ideas that are not in the passages. No introductions, no apologies, no "Sure", no "As an AI". If the passages do not address the question, reply exactly: NOT ADDRESSED';
@@ -99,6 +120,19 @@ function clean(text,P,opts){opts=opts||{};let t=String(text||'').replace(/\r/g,'
     const k=norm(s).slice(0,60);if(seen.has(k))continue;seen.add(k);
     s=s.charAt(0).toUpperCase()+s.slice(1);out.push(s);if(out.length>=max)break}
   return {text:out.join(' '),notAddressed:false}}
+// ---------- Extractive summary (no AI needed): best-matching sentence from each top passage, verbatim, with [n] ----------
+function extract(q,P,opts){opts=opts||{};const n=opts.n||3,pre=opts.prefix||'';if(!P||!P.length)return [];
+  const qt=new Map(qterms(q));relTerms(q).forEach(([w,x])=>{if(!qt.has(w))qt.set(w,x*.8)});
+  const cands=[];P.slice(0,opts.pool||4).forEach((d,i)=>{const txt=d.t.replace(/\{§\d+\}/g,' ').replace(/\[[^\]]{0,40}\]/g,' ').replace(/\([^()]{0,60}\)/g,' ').replace(/\b(St|ch|chap|sec|ver|vol|cf|viz|i\.e|e\.g|Rom|Gen|Matt|Ps|Isa|Cor|Eph|Heb|Gal|Col|Phil|Tim|Pet|Thess)\./g,'$1').replace(/[\[\]]/g,'').replace(/\s+([,.;])/g,'$1').replace(/\s+/g,' ').trim();
+    (txt.match(/[^.!?;]+[.!?;]+["”’)]*|[^.!?;]+$/g)||[]).forEach((raw,k)=>{let t=raw.trim().replace(/;$/,'.');const ws=t.split(' ');if(ws.length<7)return;
+      let sc=0;const seen=new Set();toks(t).forEach(w=>{const st=stem(w);if(qt.has(st)&&!seen.has(st)){seen.add(st);sc+=qt.get(st)}});
+      if(!sc)return;sc*=1+.35*(seen.size-1);if(/^(but|and|for|nor|or|yet|so|therefore|hence|thus|this|these|he|they|it|again|also|likewise)\b/i.test(t))sc*=.75;if(/\?["”’)]*$/.test(t)||/^["“]/.test(t))sc*=.5;if(ws.length<12)sc*=.8;
+      if(ws.length>40)t=ws.slice(0,38).join(' ').replace(/[,;:]+$/,'')+'…';
+      t=t.replace(/^[^A-Za-z“"]+/,'').replace(/[,;:]\s*(["”’]?)\s*\.?$/,'.$1').replace(/,(["”’])\.$/,'.$1');if(t.split(' ').length<7)return;if(!/[.!?…"”’)]$/.test(t))t+='.';cands.push({i,k,sc:sc-i*.15-k*.01,t:t.charAt(0).toUpperCase()+t.slice(1)})})});
+  const best=new Map();cands.sort((a,b)=>b.sc-a.sc).forEach(c=>{if(!best.has(c.i))best.set(c.i,c)});
+  let pick=[...best.values()].sort((a,b)=>b.sc-a.sc).slice(0,n);
+  if(!pick.length){const d=P[0];const t=d.t.replace(/\{§\d+\}/g,' ').replace(/\s+/g,' ').trim().split(' ').slice(0,30).join(' ');pick=[{i:0,t:t+'…'}]}
+  return pick.sort((a,b)=>a.i-b.i).map(c=>({text:c.t,ref:'['+pre+(c.i+1)+']'}))}
 const cache=new Map();
 // Generations run strictly one at a time on the single engine (queue). A disposed/lost engine is rebuilt once and the request retried silently.
 async function runOnce(kind,q,cal,lut,weak,ent){const chunks=await AI.engine.chat.completions.create({messages:prompts(kind,q,cal,lut,weak),stream:true,temperature:0.1,top_p:0.8,max_tokens:weak?90:(kind==='advanced'?200:140)});
@@ -116,5 +150,5 @@ function generate(kind,q,cal,lut,onText,weak){const key=kind+'|'+q+'|'+(weak?1:0
           catch(e2){console.warn('AI retry failed:',String(e2&&e2.message||e2));ent.failed=true;ent.text='';if(/memory|lost|device/i.test(String(e2))){AI.state='error';AI.error='AI unavailable';setTimeout(emit,50)}}}
         else ent.failed=true}}
     ent.done=true;if(ent.failed)cache.delete(key);ent.subs.forEach(f=>f(ent.failed?'':ent.text,true,ent.failed))}).catch(()=>{});}
-window.RAG={load,search,relevance,clean,verse,AI,enableAI,gpuInfo,generate,ready:()=>!!corpora,kjvReady:()=>!!kjv};
+window.RAG={load,search,relevance,clean,verse,AI,enableAI,gpuInfo,generate,extract,cached:(kind,q,weak)=>{const c=cache.get(kind+'|'+q+'|'+(weak?1:0));return c&&c.done&&!c.failed?c.text:null},ready:()=>!!corpora,kjvReady:()=>!!kjv};
 })();

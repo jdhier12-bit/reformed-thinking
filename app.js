@@ -31,34 +31,56 @@ const seg=()=>'';
 function more(){return `${alts.length?`<p class="also">Not quite? ${alts.map(a=>`<button data-id="${a.id}">${esc(a.title)}</button>`).join('')}</p>`:''}${lastQ?`<p class="also"><button data-full="1">Search the full texts instead</button></p>`:''}`}
 // ---------- AI block ----------
 function linkRefs(t,side){return esc(t).replace(/\[([CL]?)(\d+)\]/g,(m,p,n)=>{const s=p==='C'?'calvin':p==='L'?'lutheran':side;return `<button class="ref" data-ref="p-${s}-${n}" aria-label="Go to source ${n}">${n}</button>`})}
-function aiBlock(kind,ctx,P,weak,side){const A=RAG.AI;const id='ai-'+kind+(weak?'-w':'');if(!ctx||!P||!P.length)return '';
-  if(A.state==='ready'){setTimeout(()=>{if(!document.getElementById(id))return;RAG.generate(kind,ctx.q,ctx.cal,ctx.lut,(txt,done,failed)=>{const e=document.getElementById(id);if(!e)return;
-      const c=RAG.clean(txt,P,{max:kind==='advanced'?4:3});
-      if(done&&(failed||c.notAddressed||!c.text)){const bx=e.closest('.aibox');if(bx){const ld=bx.parentNode&&bx.parentNode.querySelector('.lead[data-alt]');if(ld)ld.textContent=ld.dataset.alt;bx.remove()}return}
-      e.innerHTML=c.text?linkRefs(c.text,side):'<span class="note">Writing…</span>';e.classList.toggle('streaming',!done)},weak)},0);
-    return `<div class="aibox"><span class="aitag">AI summary</span><p id="${id}" class="aitext streaming"><span class="note">Reading the sources…</span></p></div>`}
-  if(A.state==='loading')return `<div class="aibox"><span class="aitag">AI summary loading <b id="aipct">${Math.round((A.pct||0)*100)}%</b></span><div class="bar"><i style="width:${Math.round((A.pct||0)*100)}%"></i></div><p class="note small">First time only: a free AI model downloads to your phone (~0.7 GB, use Wi-Fi).</p></div>`;
-  if(A.state==='unsupported'||A.state==='error')return '';
-  return `<div class="aibox"><span class="aitag">AI summary starting…</span><div class="bar"><i style="width:0%"></i></div></div>`}
+// Every answer opens with a summary card. It shows an instant summary drawn word-for-word from the top passages,
+// then swaps in the on-device AI summary when it's ready. If the AI can't run, the instant summary stays. No error text is ever shown.
+function exHtml(items,side){return items.map(x=>linkRefs(x.text+' '+x.ref,side)).join(' ')}
+function exCompare(c){const parts=[];
+  if(c.cal&&c.cal.length&&!c.rel.calvin.none)parts.push(`<p><b class="cal">Calvin:</b> ${exHtml(RAG.extract(c.q,c.cal.slice(0,3),{n:c.rel.calvin.weak?1:2,prefix:'C',pool:3}),'calvin')}</p>`);
+  if(c.lut&&c.lut.length&&!c.rel.lutheran.none)parts.push(`<p><b class="lut">Lutheran:</b> ${exHtml(RAG.extract(c.q,c.lut.slice(0,3),{n:c.rel.lutheran.weak?1:2,prefix:'L',pool:3}),'calvin')}</p>`);
+  return parts.join('')}
+const maxFor=k=>k==='advanced'?3:3;
+function aiBlock(kind,ctx,P,weak,side,fb){const A=RAG.AI;const id='ai-'+kind+(weak?'-w':'');
+  const box=(tag,body,st)=>`<div class="aibox"><span class="aitag">${tag}</span><div id="${id}" class="aitext">${body}</div>${st||''}</div>`;
+  if(!ctx||!P||!P.length)return fb?box('Summary',fb):'';
+  const done=RAG.cached(kind,ctx.q,weak);
+  if(done!=null){const c=RAG.clean(done,P,{max:maxFor(kind)});if(c.text&&!c.notAddressed)return box('AI summary',linkRefs(c.text,side))}
+  if(A.state==='unsupported'||A.state==='error')return fb?box('Summary',fb):'';
+  let st='';
+  if(A.state==='ready'){st=`<p class="aistat"><span class="spin"></span>AI is writing a summary…</p>`;
+    setTimeout(()=>{if(!document.getElementById(id))return;RAG.generate(kind,ctx.q,ctx.cal,ctx.lut,(txt,fin,failed)=>{if(!fin)return;const e=document.getElementById(id);if(!e)return;const bx=e.closest('.aibox');
+      const s=bx&&bx.querySelector('.aistat');if(s)s.remove();const c=RAG.clean(txt,P,{max:maxFor(kind)});
+      if(failed||c.notAddressed||!c.text){if(!fb&&bx)bx.remove();return}
+      e.innerHTML=linkRefs(c.text,side);const tg=bx.querySelector('.aitag');if(tg)tg.textContent='AI summary';bx.classList.add('aidone')},weak)},0)}
+  else if(A.state==='loading'){const p=Math.round((A.pct||0)*100);st=`<div class="aistat"><span>AI summary loading <b id="aipct">${p}%</b> · first time only (~0.7 GB, use Wi-Fi)</span><div class="bar"><i style="width:${p}%"></i></div></div>`}
+  else st=`<p class="aistat"><span class="spin"></span>Starting the AI…</p>`;
+  return box(fb?'Summary':'AI summary',fb||'<span class="note">Reading the sources…</span>',st)}
+// After the visible tab's summary, queue the other tabs so switching is instant.
+function prefetch(c,t){if(RAG.AI.state!=='ready'||!c)return;setTimeout(()=>{const jobs=[];
+  if(!c.rel.calvin.none&&c.cal.length)jobs.push(['calvin',c.rel.calvin.weak]);if(!c.rel.lutheran.none&&c.lut.length)jobs.push(['lutheran',c.rel.lutheran.weak]);
+  if(!(c.rel.calvin.none&&c.rel.lutheran.none))jobs.push(['advanced',c.rel.calvin.weak&&c.rel.lutheran.weak]);
+  jobs.filter(([k])=>k!==(t==='compare'?'advanced':t)).forEach(([k,w])=>RAG.generate(k,c.q,c.cal,c.lut,()=>{},w))},5)}
 // ---------- Curated topics ----------
 function curatedSide(t,k){const S=t[k];const ctx=curAI&&curAI.t===t?curAI:null;const P=ctx&&ctx[k==='calvin'?'cal':'lut'];const weak=ctx&&ctx.w[k];
   const vs=curVerses(S);
-  return `<section class="card answer"><p class="kicker ${SIDE[k].cls}">${k==='calvin'?'Calvinist answer':'Lutheran answer'}</p><h2 class="topic">${esc(t.title)}</h2>${S.answer.split('\n\n').map(p=>`<p>${esc(p)}</p>`).join('')}
+  return `<section class="card answer"><p class="kicker ${SIDE[k].cls}">${k==='calvin'?'Calvinist answer':'Lutheran answer'}</p><h2 class="topic">${esc(t.title)}</h2>${(()=>{const paras=S.answer.split('\n\n').map(p=>`<p>${esc(p)}</p>`);const st=RAG.AI.state;const aiPossible=ctx&&!weak&&st!=='unsupported'&&st!=='error';
+     if(aiPossible&&(RAG.cached(k,ctx.q,false)!=null||st==='ready'||st==='loading'||st==='off'))return aiBlock(k,ctx,P,false,k)+paras.join('');
+     return `<div class="aibox"><span class="aitag">Summary</span><div class="aitext">${paras[0]}</div></div>`+paras.slice(1).join('')})()}
    ${S.points&&S.points.length?`<ul class="pts">${S.points.map(p=>`<li>${esc(p)}</li>`).join('')}</ul>`:''}
-   ${ctx&&!weak?aiBlock(k,ctx,P,false,k):''}</section>
+   </section>
    ${S.quotes.length?fold('Quotes from '+(k==='calvin'?'Calvin':'the Lutheran sources'),S.quotes.length,quotes(S.quotes)+(S.refs&&S.refs.length?`<ul class="pts note">${S.refs.map(r=>`<li>${esc(r)} (paraphrased)</li>`).join('')}</ul>`:'')):''}
    ${vs.length?fold('Bible verses (KJV)',vs.length,vchips(vs)):''}
    ${ctx&&P&&P.length&&!weak?fold('More from the full texts',Math.min(P.length,6),passages(P,k)):''}
    ${more()}`}
 function curatedCompare(t){const C=t.compare;const ctx=curAI&&curAI.t===t?curAI:null;const weak=ctx&&ctx.w.calvin&&ctx.w.lutheran;const P=ctx?ctx.cal.slice(0,3).concat(ctx.lut.slice(0,3)):null;
   if(mode==='simple')return seg()+`<section class="card answer"><p class="kicker" style="color:var(--cmp)">Simple comparison</p><h2 class="topic">${esc(t.title)}</h2><ul class="pts big">${C.simple.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${ctx&&!weak?aiBlock('simple',ctx,P,false,'calvin'):''}</section>`+more();
-  return seg()+`<section class="card"><p class="kicker" style="color:var(--cmp)">Side by side</p><h2 class="topic">${esc(t.title)}</h2><table><tr><th></th><th class="cal">Calvinist</th><th class="lut">Lutheran</th></tr>${C.table.map(r=>`<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join('')}</table></section>
-  <section class="card"><h3 style="color:var(--cmp)">In summary</h3><p>${esc(C.summary)}</p>${ctx&&!weak?aiBlock('advanced',ctx,P,false,'calvin'):''}</section>
+  return `<section class="card answer"><p class="kicker" style="color:var(--cmp)">Comparison</p><h2 class="topic">${esc(t.title)}</h2>${aiBlock('advanced',ctx&&!weak?ctx:null,P,false,'calvin',esc(C.summary))}</section>
+  <section class="card"><h3 style="color:var(--cmp)">Side by side</h3><table><tr><th></th><th class="cal">Calvinist</th><th class="lut">Lutheran</th></tr>${C.table.map(r=>`<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join('')}</table></section>
   ${fold('Where they agree',C.agree.length,`<ul class="pts">${C.agree.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`,true)}
   ${fold('Where they differ',C.differ.length,`<ul class="pts">${C.differ.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`,true)}`+more()}
 function syncTabs(){document.querySelectorAll('.tabs button').forEach(b=>{b.hidden=false;b.classList.toggle('on',b.dataset.tab===tab);b.setAttribute('aria-selected',b.dataset.tab===tab)});}
 function render(){syncTabs();if(!current)return home();if(current.src)return renderSrc();
-  out.innerHTML=tab==='compare'?curatedCompare(current):curatedSide(current,tab);}
+  out.innerHTML=tab==='compare'?curatedCompare(current):curatedSide(current,tab);
+  if(curAI&&curAI.t===current&&RAG.AI.state==='ready')setTimeout(()=>{const c=curAI;[['calvin',c.w.calvin],['lutheran',c.w.lutheran],['advanced',c.w.calvin&&c.w.lutheran]].filter(([k,w])=>!w&&k!==(tab==='compare'?'advanced':tab)).forEach(([k])=>RAG.generate(k,c.q,c.cal,c.lut,()=>{},false))},5);}
 function home(){const pick=SUGGEST;const rec=getRecent();syncTabs();
   out.innerHTML=`<section class="card intro"><h2 class="topic">Ask anything</h2><p class="summary">Get Calvin’s answer, the Lutheran answer, and how they compare — straight from the sources, with the KJV verses behind them.</p></section>
   ${rec.length?`<section class="card"><h3>Recent <button class="linkbtn" data-clear="1">Clear</button></h3><div class="chips">${rec.map(q=>`<button class="chip" data-q="${esc(q)}">↺ ${esc(q)}</button>`).join('')}</div></section>`:''}
@@ -78,17 +100,17 @@ function passages(list,side,openFirst){return list.map((d,i)=>{const vs=RAG.kjvR
   return `<details class="passage" id="p-${side}-${i+1}"${openFirst&&i===0?' open':''}><summary><span class="pn">${i+1}</span><span class="pc">${esc(d.c)}</span><span class="ps">${snippet(d.t)}</span></summary>
   <blockquote>${ptext(d.t)}<cite>${d.u?`<a href="${esc(d.u)}" target="_blank" rel="noopener">${esc(d.c)}</a>`:esc(d.c)}${d.w?' — '+esc(d.w):''}</cite></blockquote>${vs.length?`<p class="kicker vlabel">Verses cited (KJV)</p>${vchips(vs)}`:(d.r&&d.r.length&&!RAG.kjvReady()?'<p class="note">Loading verses…</p>':'')}</details>`}).join('')}
 function srcCard(side,list,n,open){if(!list.length)return '';const L=list.slice(0,n);return `<section class="card srcs"><h3 class="${SIDE[side].cls}">Sources · ${SIDE[side].src}</h3>${fold('Show sources',L.length,passages(L,side,false),open)}</section>`}
-function sideAnswer(side){const c=current;const list=side==='calvin'?c.cal:c.lut;const rel=c.rel[side];const P=list.slice(0,4);const aiOK=RAG.AI.state!=='unsupported'&&RAG.AI.state!=='error';
-  if(rel.none)return `<section class="card answer"><p class="kicker ${SIDE[side].cls}">${side==='calvin'?'Calvinist answer':'Lutheran answer'}</p><h2 class="topic">${esc(c.q)}</h2><p>${SIDE[side].none}. Try different wording, or one of the topics below.</p>${more()}</section>`;
-  if(rel.weak)return `<section class="card answer"><p class="kicker ${SIDE[side].cls}">${side==='calvin'?'Calvinist answer':'Lutheran answer'}</p><h2 class="topic">${esc(c.q)}</h2><p class="lead" data-alt="${SIDE[side].miss}. Here are the closest passages:">${aiOK?SIDE[side].miss+', but here’s something that could help:':SIDE[side].miss+'. Here are the closest passages:'}</p>${aiOK?aiBlock(side,c,P,true,side):''}</section>`;
-  return `<section class="card answer"><p class="kicker ${SIDE[side].cls}">${side==='calvin'?'Calvinist answer':'Lutheran answer'}</p><h2 class="topic">${esc(c.q)}</h2>${aiOK?aiBlock(side,c,P,false,side):`<p class="note">Here’s what the sources say — tap a passage to read it.</p>`}</section>`}
+function sideAnswer(side){const c=current;const list=side==='calvin'?c.cal:c.lut;const rel=c.rel[side];const P=list.slice(0,4);
+  const head=`<p class="kicker ${SIDE[side].cls}">${side==='calvin'?'Calvinist answer':'Lutheran answer'}</p><h2 class="topic">${esc(c.q)}</h2>`;
+  if(rel.none)return `<section class="card answer">${head}<p>${SIDE[side].none}. Try different wording, or one of the topics below.</p>${more()}</section>`;
+  const fb=exHtml(RAG.extract(c.q,P,{n:rel.weak?2:3}),side);
+  return `<section class="card answer">${head}${rel.weak?`<p class="lead">${SIDE[side].miss}, but here’s something that could help:</p>`:''}${aiBlock(side,c,P,rel.weak,side,fb)}</section>`}
 function renderSrc(){const c=current;let h='';
   if(tab!=='compare'){h=sideAnswer(tab)+srcCard(tab,tab==='calvin'?c.cal:c.lut,6,true)}
-  else{const bw=c.rel.calvin.weak&&c.rel.lutheran.weak,none=c.rel.calvin.none&&c.rel.lutheran.none;const P=c.cal.slice(0,3).concat(c.lut.slice(0,3));const aiOK=RAG.AI.state!=='unsupported'&&RAG.AI.state!=='error';
-    const kind=mode==='simple'?'simple':'advanced';
-    h=seg()+`<section class="card answer"><p class="kicker" style="color:var(--cmp)">Comparison</p><h2 class="topic">${esc(c.q)}</h2>${none?`<p>Neither Calvin nor the Lutheran sources discuss this. Try different wording.</p>`:bw?`<p class="lead" data-alt="Neither Calvin nor the Lutheran confessions address this directly. Here are the closest passages:">${aiOK?'Neither Calvin nor the Lutheran confessions address this directly, but here’s something that could help:':'Neither Calvin nor the Lutheran confessions address this directly. Here are the closest passages:'}</p>`:''}${!none&&aiOK?aiBlock(kind,c,P,bw,'calvin'):''}${!none&&!aiOK?`<p class="note">Compare the closest passages from each side below.</p>`:''}</section>`+
-      srcCard('calvin',c.cal,mode==='simple'?2:4,mode==='advanced')+srcCard('lutheran',c.lut,mode==='simple'?2:4,mode==='advanced')}
-  out.innerHTML=h+(current.alts&&current.alts.length?`<p class="also">Related topics: ${current.alts.map(a=>`<button data-id="${a.id}">${esc(a.title)}</button>`).join('')}</p>`:'');}
+  else{const bw=c.rel.calvin.weak&&c.rel.lutheran.weak,none=c.rel.calvin.none&&c.rel.lutheran.none;const P=c.cal.slice(0,3).concat(c.lut.slice(0,3));
+    h=`<section class="card answer"><p class="kicker" style="color:var(--cmp)">Comparison</p><h2 class="topic">${esc(c.q)}</h2>${none?`<p>Neither Calvin nor the Lutheran sources discuss this. Try different wording.</p>`:(bw?`<p class="lead">Neither Calvin nor the Lutheran confessions address this directly, but here’s something that could help:</p>`:'')+aiBlock('advanced',c,P,bw,'calvin',exCompare(c))}</section>`+
+      srcCard('calvin',c.cal,4,true)+srcCard('lutheran',c.lut,4,true)}
+  out.innerHTML=h+(current.alts&&current.alts.length?`<p class="also">Related topics: ${current.alts.map(a=>`<button data-id="${a.id}">${esc(a.title)}</button>`).join('')}</p>`:'');prefetch(c,tab)}
 async function fullText(q,relAlts){alts=[];current=null;syncTabs();
   out.innerHTML=`<section class="card"><p class="kicker">Searching</p><h2 class="topic">${esc(q)}</h2><p class="summary" id="st">Loading the texts…</p></section>`;
   try{await RAG.load(s=>{const e=document.getElementById('st');if(e)e.textContent=s});}
@@ -98,7 +120,7 @@ async function fullText(q,relAlts){alts=[];current=null;syncTabs();
   RAG.enableAI();history.replaceState(null,'','#q='+encodeURIComponent(q));render();window.scrollTo({top:0,behavior:'smooth'})}
 // ---------- events ----------
 RAG.AI.listeners.add(()=>{if(!current)return;const st=RAG.AI.state;if(st==='loading'&&document.querySelector('.aibox .bar')){const p=Math.round((RAG.AI.pct||0)*100);document.querySelectorAll('.aibox .bar i').forEach(b=>b.style.width=p+'%');const e=document.getElementById('aipct');if(e)e.textContent=p+'%';else render();return}
-  if(!document.querySelector('.aitext.streaming:not(:empty)')||st!=='ready')render();});
+  render();});
 document.addEventListener('kjv-ready',()=>{if(current&&current.src){const open=[...document.querySelectorAll('details[open]')].map(d=>d.id).filter(Boolean);render();open.forEach(id=>{const d=document.getElementById(id);if(d)d.open=true})}});
 out.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
   if(b.dataset.ref){const d=document.getElementById(b.dataset.ref);if(d){d.open=true;const f=d.closest('details.fold');if(f)f.open=true;d.scrollIntoView({behavior:'smooth',block:'start'});d.classList.add('flash');setTimeout(()=>d.classList.remove('flash'),1200)}return}
